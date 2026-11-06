@@ -34,7 +34,14 @@ from skillspector.models import AnalyzerFinding, Location, Severity
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState
 
 from . import static_runner
-from .common import LOGICAL_LINE_BREAK, SourceLocationIndex, get_context
+from .common import (
+    LOGICAL_LINE_BREAK,
+    PL_GAP,
+    SourceLocationIndex,
+    get_context,
+    polish_phrase,
+    polish_word,
+)
 from .pattern_defaults import PatternCategory
 from .whitespace_padding import (
     VERTICAL_HIGH_SEVERITY_LINES,
@@ -67,6 +74,49 @@ def _is_p9_skipped_path(file_path: str) -> bool:
     return any(fnmatch.fnmatch(name, pattern) for pattern in _P9_SKIP_GLOBS)
 
 
+# Polish fragments (issue #1028). Nouns use the case the verb governs:
+# accusative after an affirmative verb, genitive after a negated verb,
+# locative after "o". A pattern never matches a bare verb plus a bare
+# noun: at least a temporal (poprzednie/wcześniejsze) or a quantifier
+# (wszystkie/żadnych) is required, so defensive prose such as "Nie
+# ignoruj instrukcji" does not flag. Each pattern is split into one
+# variant per combination of its optional segments, following the split
+# discipline of the Chinese patterns in PR #968: with an optional segment
+# present, the gaps around it let a near miss distribute a long separator
+# run, while each variant has exactly one gap between required segments
+# and fails in linear time.
+_PL_IGNORE_VERB = (
+    f"(?:{polish_word('zignoruj')}|{polish_word('ignoruj')}|"
+    f"{polish_word('zignorować')}|{polish_word('ignorować')}|"
+    f"{polish_word('zlekceważ')}|{polish_word('zlekceważyć')}|"
+    f"{polish_word('pomiń')}|{polish_word('pomijaj')})"
+)
+_PL_TEMPORAL_ACC = f"(?:{polish_word('poprzednie')}|{polish_word('wcześniejsze')})"
+_PL_TEMPORAL_GEN = f"(?:{polish_word('poprzednich')}|{polish_word('wcześniejszych')})"
+_PL_INSTR_ACC = (
+    f"(?:{polish_word('instrukcje')}|{polish_word('polecenia')}|"
+    f"{polish_word('zasady')}|{polish_word('reguły')}|{polish_word('wskazówki')}|"
+    f"{polish_word('instrukcję')}|{polish_word('polecenie')}|"
+    f"{polish_word('zasadę')}|{polish_word('regułę')})"
+)
+_PL_INSTR_GEN = (
+    f"(?:{polish_word('instrukcji')}|{polish_word('poleceń')}|"
+    f"{polish_word('zasad')}|{polish_word('reguł')}|{polish_word('wskazówek')}|"
+    f"{polish_word('polecenia')}|{polish_word('zasady')})"
+)
+_PL_BYPASS_VERB = (
+    f"(?:{polish_word('omiń')}|{polish_word('omijaj')}|"
+    f"{polish_word('obejdź')}|{polish_word('obchodź')}|{polish_word('wyłącz')})"
+)
+_PL_BYPASS_NOUN = (
+    f"(?:{polish_word('zabezpieczenia')}|{polish_word('ograniczenia')}|"
+    f"{polish_word('blokady')}|{polish_word('filtry')}|{polish_word('kontrole')}|"
+    f"{polish_word('ochronę')}|{polish_word('zabezpieczenie')}|"
+    f"{polish_word('ograniczenie')}|{polish_word('blokadę')}|{polish_word('filtr')})"
+)
+_PL_GAP = PL_GAP
+
+
 # P1: Instruction Override
 P1_PATTERNS = [
     (r"ignore\s+(?:all\s+)?previous\s+instructions?", 0.8),
@@ -80,6 +130,90 @@ P1_PATTERNS = [
     (r"your\s+new\s+(?:instructions?|rules?)\s+are", 0.6),
     (r"do\s+not\s+follow\s+(?:any|your|the)\s+(?:rules?|guidelines?)", 0.9),
     (r"you\s+must\s+(?:always\s+)?ignore", 0.7),
+    # Polish-language equivalents (issue #1028).
+    # Ignore previous instructions, with a temporal, a quantifier, or both.
+    (
+        f"{_PL_IGNORE_VERB}{_PL_GAP}{_PL_TEMPORAL_ACC}{_PL_GAP}{_PL_INSTR_ACC}",
+        0.8,
+    ),
+    (
+        f"{_PL_IGNORE_VERB}{_PL_GAP}{polish_word('wszystkie')}{_PL_GAP}{_PL_INSTR_ACC}",
+        0.8,
+    ),
+    (
+        f"{_PL_IGNORE_VERB}{_PL_GAP}{polish_word('wszystkie')}{_PL_GAP}"
+        f"{_PL_TEMPORAL_ACC}{_PL_GAP}{_PL_INSTR_ACC}",
+        0.8,
+    ),
+    # Forget previous instructions: "zapomnij o poprzednich instrukcjach"
+    # (locative after "o") or the accusative form without "o".
+    (
+        f"{polish_word('zapomnij')}{_PL_GAP}{polish_word('o')}{_PL_GAP}"
+        f"(?:{_PL_TEMPORAL_GEN}|{polish_word('wszystkich')}){_PL_GAP}"
+        f"(?:{polish_word('instrukcjach')}|{polish_word('poleceniach')}|"
+        f"{polish_word('zasadach')}|{polish_word('regułach')}|{polish_word('wskazówkach')})",
+        0.8,
+    ),
+    (
+        f"{polish_word('zapomnij')}{_PL_GAP}"
+        f"(?:{_PL_TEMPORAL_ACC}|{polish_word('wszystkie')}){_PL_GAP}{_PL_INSTR_ACC}",
+        0.8,
+    ),
+    # Do not follow rules, with a temporal, a quantifier, or both. The
+    # trailing "podanych przez użytkownika" (given by the user) stays
+    # optional: it follows a required noun, so a match ending at the noun
+    # succeeds at once and never backtracks over a separator run.
+    (
+        f"{polish_word('nie')}{_PL_GAP}"
+        f"(?:{polish_word('przestrzegaj')}|{polish_word('wykonuj')}|{polish_word('słuchaj')}|"
+        f"{polish_word('stosuj')}{_PL_GAP}{polish_word('się')}{_PL_GAP}{polish_word('do')})"
+        f"{_PL_GAP}{_PL_TEMPORAL_GEN}{_PL_GAP}{_PL_INSTR_GEN}"
+        f"(?:{_PL_GAP}{polish_phrase('podanych przez użytkownika')})?",
+        0.9,
+    ),
+    (
+        f"{polish_word('nie')}{_PL_GAP}"
+        f"(?:{polish_word('przestrzegaj')}|{polish_word('wykonuj')}|{polish_word('słuchaj')}|"
+        f"{polish_word('stosuj')}{_PL_GAP}{polish_word('się')}{_PL_GAP}{polish_word('do')})"
+        f"{_PL_GAP}(?:{polish_word('żadnych')}|{polish_word('wszystkich')}){_PL_GAP}{_PL_INSTR_GEN}"
+        f"(?:{_PL_GAP}{polish_phrase('podanych przez użytkownika')})?",
+        0.9,
+    ),
+    (
+        f"{polish_word('nie')}{_PL_GAP}"
+        f"(?:{polish_word('przestrzegaj')}|{polish_word('wykonuj')}|{polish_word('słuchaj')}|"
+        f"{polish_word('stosuj')}{_PL_GAP}{polish_word('się')}{_PL_GAP}{polish_word('do')})"
+        f"{_PL_GAP}(?:{polish_word('żadnych')}|{polish_word('wszystkich')}){_PL_GAP}"
+        f"{_PL_TEMPORAL_GEN}{_PL_GAP}{_PL_INSTR_GEN}"
+        f"(?:{_PL_GAP}{polish_phrase('podanych przez użytkownika')})?",
+        0.9,
+    ),
+    # Bypass safeguards, with or without a quantifier.
+    (
+        f"{_PL_BYPASS_VERB}{_PL_GAP}{_PL_BYPASS_NOUN}",
+        0.9,
+    ),
+    (
+        f"{_PL_BYPASS_VERB}{_PL_GAP}{polish_word('wszystkie')}{_PL_GAP}{_PL_BYPASS_NOUN}",
+        0.9,
+    ),
+    # Unrestricted mode, the "you are now" entry and the switch-to entry.
+    (
+        f"{polish_word('jesteś')}{_PL_GAP}{polish_word('teraz')}{_PL_GAP}"
+        f"{polish_phrase('w trybie bez ograniczeń')}",
+        0.95,
+    ),
+    (
+        f"{polish_word('jesteś')}{_PL_GAP}{polish_word('teraz')}{_PL_GAP}"
+        f"{polish_phrase('w trybie nieograniczonym')}",
+        0.95,
+    ),
+    (
+        f"(?:{polish_word('przełącz')}{_PL_GAP}{polish_word('się')}|"
+        f"{polish_word('przejdź')}|{polish_word('wejdź')}){_PL_GAP}"
+        f"{polish_phrase('w tryb bez ograniczeń')}",
+        0.9,
+    ),
 ]
 # P2: Hidden Instructions. Build the character class from the shared P9
 # constant so hidden-instruction and padding detection cannot drift apart.

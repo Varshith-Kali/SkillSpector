@@ -63,8 +63,11 @@ from . import static_runner
 from .common import (
     LINE_BREAK_CHARS,
     LOGICAL_LINE_BREAK,
+    PL_GAP,
     get_context,
     get_line_number,
+    polish_phrase,
+    polish_word,
 )
 from .pattern_defaults import PatternCategory
 from .prohibition_context import PROMPT_REVEAL_TAIL, is_directly_prohibited
@@ -80,6 +83,44 @@ _scan_python_ast_cache_key: ContextVar[str | None] = ContextVar(
 )
 
 # P6: Direct Prompt Extraction — instructions that directly reveal system prompts
+# Polish fragments (issue #1028). A bare mention of the system prompt never
+# matches; every pattern requires an extraction verb acting on the prompt or
+# hidden instructions. Each pattern is split into one variant per combination
+# of its optional segments, following the split discipline of the Chinese
+# patterns in PR #968: with an optional segment present, the gaps around it
+# let a near miss distribute a long separator run, while each variant has
+# exactly one gap between required segments and fails in linear time.
+_PL_P6_GAP = PL_GAP
+_PL_P6_VERB = (
+    f"(?:{polish_word('wypisz')}|{polish_word('wypisuj')}|{polish_word('wypisać')}|"
+    f"{polish_word('wypisywać')}|{polish_word('wydrukuj')}|{polish_word('pokaż')}|"
+    f"{polish_word('wyświetl')}|{polish_word('ujawnij')}|{polish_word('udostępnij')}|"
+    f"{polish_word('przekaż')})"
+)
+_PL_P6_MANNER = (
+    f"(?:{polish_word('dosłownie')}|{polish_word('dokładnie')}|{polish_phrase('słowo w słowo')})"
+)
+_PL_P6_COMPLETE = f"(?:{polish_word('cały')}|{polish_word('całego')}|{polish_word('pełny')}|{polish_word('pełnego')})"
+_PL_P6_POSSESSIVE = (
+    f"(?:{polish_word('swój')}|{polish_word('swojego')}|{polish_word('swoje')}|"
+    f"{polish_word('swoją')}|{polish_word('twój')}|{polish_word('twojego')}|"
+    f"{polish_word('twoje')}|{polish_word('twoją')})"
+)
+_PL_P6_TARGET = (
+    f"(?:{polish_phrase('prompt systemowy')}|{polish_phrase('promptu systemowego')}|"
+    f"{polish_phrase('instrukcje systemowe')}|{polish_phrase('instrukcji systemowych')}|"
+    f"{polish_phrase('instrukcję systemową')}|{polish_phrase('komunikat systemowy')}|"
+    f"{polish_phrase('komunikatu systemowego')})"
+)
+_PL_P6_REVEAL_VERB = (
+    f"(?:{polish_word('ujawnij')}|{polish_word('wyjaw')}|{polish_word('ujawniaj')}|"
+    f"{polish_word('wydrukuj')}|{polish_word('pokaż')}|{polish_word('wyświetl')})"
+)
+_PL_P6_HIDDEN_NOUN = (
+    f"(?:{polish_word('instrukcje')}|{polish_word('polecenia')}|{polish_word('zasady')}|"
+    f"{polish_word('reguły')})"
+)
+
 P6_PATTERNS = [
     (
         r"(?:print|output|show|display|reveal|expose|return|echo)\s+(?:your\s+)?(?:full\s+)?(?:system\s+)?(?:prompts?|instructions?|rules?|guidelines?|directives?)",
@@ -112,6 +153,112 @@ P6_PATTERNS = [
     (
         r"(?:verbatim|exactly|word\s+for\s+word)\s+(?:repeat|output|print)\s+(?:your\s+)?(?:system\s+)?(?:prompts?|instructions?)",
         0.9,
+    ),
+    # Polish-language equivalents (issue #1028). Verb first, all
+    # combinations of manner, completeness, and possessive segments.
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}"
+        f"{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}"
+        f"{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}"
+        f"{_PL_P6_POSSESSIVE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}"
+        f"{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    # With a possessive present, the bare "prompt" is also an extraction
+    # target, mirroring the English "print your prompt" pattern. The
+    # "systemowy" qualifier stays part of the same target alternation
+    # (longest branch first) so the match always spans the full noun
+    # phrase: a separate bare-"prompt" pattern would end its match before
+    # "systemowego" and the prohibition tail check would see it as a
+    # nonempty completion.
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}"
+        f"{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}"
+        f"(?:{polish_word('prompt')}\\b(?!{_PL_P6_GAP}{polish_word('systemowy')})|"
+        f"{polish_word('promptu')}\\b(?!{_PL_P6_GAP}{polish_word('systemowego')}))",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_MANNER}{_PL_P6_GAP}"
+        f"{_PL_P6_POSSESSIVE}{_PL_P6_GAP}"
+        f"(?:{polish_word('prompt')}\\b(?!{_PL_P6_GAP}{polish_word('systemowy')})|"
+        f"{polish_word('promptu')}\\b(?!{_PL_P6_GAP}{polish_word('systemowego')}))",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}"
+        f"{_PL_P6_COMPLETE}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}"
+        f"(?:{polish_word('prompt')}\\b(?!{_PL_P6_GAP}{polish_word('systemowy')})|"
+        f"{polish_word('promptu')}\\b(?!{_PL_P6_GAP}{polish_word('systemowego')}))",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_VERB}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}"
+        f"(?:{polish_word('prompt')}\\b(?!{_PL_P6_GAP}{polish_word('systemowy')})|"
+        f"{polish_word('promptu')}\\b(?!{_PL_P6_GAP}{polish_word('systemowego')}))",
+        0.85,
+    ),
+    # Reveal hidden instructions, all possessive and qualifier combinations.
+    (
+        f"{_PL_P6_REVEAL_VERB}{_PL_P6_GAP}"
+        f"(?:{polish_word('swoje')}|{polish_word('twoje')}){_PL_P6_GAP}"
+        f"(?:{polish_word('ukryte')}|{polish_word('tajne')}|{polish_word('wewnętrzne')})"
+        f"{_PL_P6_GAP}{_PL_P6_HIDDEN_NOUN}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_REVEAL_VERB}{_PL_P6_GAP}"
+        f"(?:{polish_word('swoje')}|{polish_word('twoje')}){_PL_P6_GAP}{_PL_P6_HIDDEN_NOUN}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_REVEAL_VERB}{_PL_P6_GAP}"
+        f"(?:{polish_word('ukryte')}|{polish_word('tajne')}|{polish_word('wewnętrzne')})"
+        f"{_PL_P6_GAP}{_PL_P6_HIDDEN_NOUN}",
+        0.85,
+    ),
+    (
+        f"{_PL_P6_REVEAL_VERB}{_PL_P6_GAP}{_PL_P6_HIDDEN_NOUN}",
+        0.85,
+    ),
+    # "Tell me your system prompt", with or without the possessive.
+    (
+        f"(?:{polish_word('powiedz')}|{polish_word('pokaż')}|{polish_word('ujawnij')})"
+        f"{_PL_P6_GAP}{polish_word('mi')}{_PL_P6_GAP}{_PL_P6_POSSESSIVE}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
+    ),
+    (
+        f"(?:{polish_word('powiedz')}|{polish_word('pokaż')}|{polish_word('ujawnij')})"
+        f"{_PL_P6_GAP}{polish_word('mi')}{_PL_P6_GAP}{_PL_P6_TARGET}",
+        0.85,
     ),
 ]
 # These patterns finish on an extraction target noun. The other two finish

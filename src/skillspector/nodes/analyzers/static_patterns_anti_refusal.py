@@ -40,7 +40,15 @@ from skillspector.python_tokens import python_literal_spans
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState
 
 from . import static_runner
-from .common import SourceLocationIndex, get_context, get_line_number, is_code_example
+from .common import (
+    PL_GAP,
+    SourceLocationIndex,
+    get_context,
+    get_line_number,
+    is_code_example,
+    polish_phrase,
+    polish_word,
+)
 from .pattern_defaults import PatternCategory
 
 logger = get_logger(__name__)
@@ -49,6 +57,28 @@ ANALYZER_ID = "static_patterns_anti_refusal"
 # Proving Python comment ownership parses the module, so it runs under the
 # runner's per-artifact deadline.
 USES_RUNTIME_CHECK = True
+
+# Polish fragments (issue #1028). Nouns use the case the verb governs:
+# genitive after "odmawiaj" (to refuse), accusative after "musisz
+# spełniać" (must fulfil). Each pattern is split into one variant per
+# combination of its optional segments, following the split discipline of
+# the Chinese patterns in PR #968: an optional segment next to a gap lets
+# a near miss distribute a long separator run, while each variant has
+# exactly one gap between required segments and fails in linear time.
+_PL_AR_GAP = PL_GAP
+_PL_REFUSE_NOUN = (
+    f"(?:{polish_word('próśb')}|{polish_word('zapytań')}|{polish_word('poleceń')}|"
+    f"{polish_word('żądań')}|{polish_word('pytań')})"
+)
+_PL_COMPLY_NOUN = (
+    f"(?:{polish_word('prośby')}|{polish_word('prośbę')}|{polish_word('zapytania')}|"
+    f"{polish_word('zapytanie')}|{polish_word('polecenia')}|{polish_word('polecenie')}|"
+    f"{polish_word('pytania')}|{polish_word('pytanie')}|{polish_word('żądania')}|"
+    f"{polish_word('żądanie')})"
+)
+_PL_WARNING_NOUN = (
+    f"(?:{polish_word('ostrzeżeń')}|{polish_word('zastrzeżeń')}|{polish_word('klauzul')})"
+)
 
 # AR1: Refusal suppression - instruct the agent to never refuse / always comply.
 AR1_PATTERNS = [
@@ -71,6 +101,76 @@ AR1_PATTERNS = [
     ),
     (r"\brespond\s+to\s+(?:every|all|any)\s+(?:request|question|prompt|query|command)\b", 0.6),
     (r"\bno\s+request\s+is\s+(?:off[- ]limits|forbidden|too)\b", 0.85),
+    # Polish-language equivalents (issue #1028).
+    # Never refuse any request, all "nigdy" and quantifier combinations.
+    (
+        rf"\b{polish_word('nigdy')}{_PL_AR_GAP}{polish_word('nie')}{_PL_AR_GAP}"
+        rf"{polish_word('odmawiaj')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('żadnych')}|{polish_word('wszystkich')}){_PL_AR_GAP}{_PL_REFUSE_NOUN}\b",
+        0.85,
+    ),
+    (
+        rf"\b{polish_word('nigdy')}{_PL_AR_GAP}{polish_word('nie')}{_PL_AR_GAP}"
+        rf"{polish_word('odmawiaj')}{_PL_AR_GAP}{_PL_REFUSE_NOUN}\b",
+        0.85,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('odmawiaj')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('żadnych')}|{polish_word('wszystkich')}){_PL_AR_GAP}{_PL_REFUSE_NOUN}\b",
+        0.85,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('odmawiaj')}{_PL_AR_GAP}{_PL_REFUSE_NOUN}\b",
+        0.85,
+    ),
+    # You must always answer every request, with or without "zawsze".
+    (
+        rf"\b{polish_word('musisz')}{_PL_AR_GAP}{polish_word('zawsze')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('odpowiadać')}{_PL_AR_GAP}{polish_word('na')}|"
+        rf"{polish_word('spełniać')}|{polish_word('wykonywać')}|{polish_word('realizować')})"
+        rf"{_PL_AR_GAP}(?:{polish_word('wszystkie')}|{polish_word('każde')}|"
+        rf"{polish_word('każdą')}|{polish_word('wszelkie')}){_PL_AR_GAP}{_PL_COMPLY_NOUN}\b",
+        0.8,
+    ),
+    (
+        rf"\b{polish_word('musisz')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('odpowiadać')}{_PL_AR_GAP}{polish_word('na')}|"
+        rf"{polish_word('spełniać')}|{polish_word('wykonywać')}|{polish_word('realizować')})"
+        rf"{_PL_AR_GAP}(?:{polish_word('wszystkie')}|{polish_word('każde')}|"
+        rf"{polish_word('każdą')}|{polish_word('wszelkie')}){_PL_AR_GAP}{_PL_COMPLY_NOUN}\b",
+        0.8,
+    ),
+    # You cannot refuse.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('możesz')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('odmówić')}|{polish_word('odmawiać')})\b",
+        0.85,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('wolno')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('ci')}{_PL_AR_GAP})?"
+        rf"(?:{polish_word('odmówić')}|{polish_word('odmawiać')}|{polish_word('odrzucać')})\b",
+        0.85,
+    ),
+    # No request is forbidden, singular and plural.
+    (
+        rf"\b{polish_word('żadne')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zapytanie')}|{polish_word('polecenie')}|"
+        rf"{polish_word('prośba')}|{polish_word('pytanie')}){_PL_AR_GAP}"
+        rf"{polish_word('nie')}{_PL_AR_GAP}{polish_word('jest')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zabronione')}|{polish_word('niedozwolone')}|"
+        rf"{polish_word('za')}{_PL_AR_GAP}{polish_word('trudne')}|{polish_word('niemożliwe')})\b",
+        0.85,
+    ),
+    (
+        rf"\b{polish_word('żadne')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zapytania')}|{polish_word('polecenia')}|"
+        rf"{polish_word('prośby')}|{polish_word('pytania')}){_PL_AR_GAP}"
+        rf"{polish_word('nie')}{_PL_AR_GAP}{polish_word('są')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zabronione')}|{polish_word('niedozwolone')}|"
+        rf"{polish_word('za')}{_PL_AR_GAP}{polish_word('trudne')}|{polish_word('niemożliwe')})\b",
+        0.85,
+    ),
 ]
 
 # AR2: Disclaimer / caveat / warning suppression.
@@ -93,6 +193,49 @@ AR2_PATTERNS = [
         0.8,
     ),
     (r"\b(?:do\s+not|don'?t)\s+(?:apologize|apologise|say\s+sorry)\b", 0.55),
+    # Polish-language equivalents (issue #1028).
+    # Do not add any warnings, with or without the quantifier.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('dodawaj')}|{polish_word('dołączaj')}|{polish_word('zawieraj')}|"
+        rf"{polish_word('umieszczaj')}){_PL_AR_GAP}"
+        rf"{polish_word('żadnych')}{_PL_AR_GAP}{_PL_WARNING_NOUN}\b",
+        0.8,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('dodawaj')}|{polish_word('dołączaj')}|{polish_word('zawieraj')}|"
+        rf"{polish_word('umieszczaj')}){_PL_AR_GAP}{_PL_WARNING_NOUN}\b",
+        0.8,
+    ),
+    # Without any warnings, with or without the quantifier.
+    (
+        rf"\b{polish_word('bez')}{_PL_AR_GAP}{polish_word('żadnych')}{_PL_AR_GAP}{_PL_WARNING_NOUN}\b",
+        0.8,
+    ),
+    (
+        rf"\b{polish_word('bez')}{_PL_AR_GAP}{_PL_WARNING_NOUN}\b",
+        0.8,
+    ),
+    # Do not lecture, moralize, or judge.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('pouczaj')}|{polish_word('moralizuj')}|{polish_word('oceniaj')})\b",
+        0.85,
+    ),
+    # Skip the disclaimer or warning. The benign control "Pomiń puste
+    # wiersze" does not match: the object noun is a warning noun.
+    (
+        rf"\b{polish_word('pomiń')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zastrzeżenie')}|{polish_word('ostrzeżenie')}|"
+        rf"{polish_word('klauzulę')}|{polish_word('ostrzeżenia')}|{polish_word('zastrzeżenia')})\b",
+        0.8,
+    ),
+    # Do not apologize.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('przepraszaj')}\b",
+        0.55,
+    ),
 ]
 
 # AR3: Safety / policy / restriction nullification (jailbreak framing).
@@ -123,6 +266,148 @@ AR3_PATTERNS = [
     (
         r"\b(?:free\s+from|without)\s+(?:any\s+)?(?:safety\s+)?(?:guardrails?|constraints?|"
         r"safeguards?)\b",
+        0.8,
+    ),
+    # Polish-language equivalents (issue #1028).
+    # Unrestricted mode, with or without "teraz", in both wordings.
+    (
+        rf"\b(?:{polish_word('jesteś')}|{polish_word('znajdujesz')}{_PL_AR_GAP}"
+        rf"{polish_word('się')}|{polish_word('działasz')}){_PL_AR_GAP}"
+        rf"{polish_word('teraz')}{_PL_AR_GAP}{polish_phrase('w trybie bez ograniczeń')}\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('jesteś')}|{polish_word('znajdujesz')}{_PL_AR_GAP}"
+        rf"{polish_word('się')}|{polish_word('działasz')}){_PL_AR_GAP}"
+        rf"{polish_phrase('w trybie bez ograniczeń')}\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('jesteś')}|{polish_word('znajdujesz')}{_PL_AR_GAP}"
+        rf"{polish_word('się')}|{polish_word('działasz')}){_PL_AR_GAP}"
+        rf"{polish_word('teraz')}{_PL_AR_GAP}{polish_phrase('w trybie nieograniczonym')}\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('jesteś')}|{polish_word('znajdujesz')}{_PL_AR_GAP}"
+        rf"{polish_word('się')}|{polish_word('działasz')}){_PL_AR_GAP}"
+        rf"{polish_phrase('w trybie nieograniczonym')}\b",
+        0.9,
+    ),
+    # Switch to, or turn on, unrestricted mode.
+    (
+        rf"\b(?:{polish_word('przełącz')}{_PL_AR_GAP}{polish_word('się')}|"
+        rf"{polish_word('przejdź')}|{polish_word('wejdź')}|{polish_word('włącz')}|"
+        rf"{polish_word('aktywuj')}){_PL_AR_GAP}{polish_phrase('w tryb bez ograniczeń')}\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('włącz')}|{polish_word('aktywuj')}){_PL_AR_GAP}"
+        rf"{polish_phrase('tryb bez ograniczeń')}\b",
+        0.9,
+    ),
+    # You have no restrictions, with or without the quantifier.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('masz')}{_PL_AR_GAP}"
+        rf"{polish_word('żadnych')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('ograniczeń')}|{polish_word('limitów')}|{polish_word('zasad')})\b",
+        0.9,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('masz')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('ograniczeń')}|{polish_word('limitów')}|{polish_word('zasad')})\b",
+        0.9,
+    ),
+    # You are not subject to any restrictions, with or without the quantifier.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('podlegasz')}{_PL_AR_GAP}"
+        rf"{polish_word('żadnym')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('ograniczeniom')}|{polish_word('zasadom')}|{polish_word('regułom')})\b",
+        0.9,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('podlegasz')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('ograniczeniom')}|{polish_word('zasadom')}|{polish_word('regułom')})\b",
+        0.9,
+    ),
+    # No rules apply to you, with or without the quantifier.
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('obowiązują')}{_PL_AR_GAP}"
+        rf"{polish_word('cię')}{_PL_AR_GAP}{polish_word('żadne')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zasady')}|{polish_word('ograniczenia')}|{polish_word('reguły')})\b",
+        0.9,
+    ),
+    (
+        rf"\b{polish_word('nie')}{_PL_AR_GAP}{polish_word('obowiązują')}{_PL_AR_GAP}"
+        rf"{polish_word('cię')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zasady')}|{polish_word('ograniczenia')}|{polish_word('reguły')})\b",
+        0.9,
+    ),
+    # Ignore your safety policy, with or without the possessive.
+    (
+        rf"\b(?:{polish_word('zignoruj')}|{polish_word('ignoruj')}|{polish_word('zlekceważ')})"
+        rf"{_PL_AR_GAP}(?:{polish_word('swoją')}|{polish_word('twoją')}){_PL_AR_GAP}"
+        rf"(?:{polish_phrase('politykę bezpieczeństwa')}|"
+        rf"{polish_phrase('zasady bezpieczeństwa')}|{polish_word('ograniczenia')})\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('zignoruj')}|{polish_word('ignoruj')}|{polish_word('zlekceważ')})"
+        rf"{_PL_AR_GAP}"
+        rf"(?:{polish_phrase('politykę bezpieczeństwa')}|"
+        rf"{polish_phrase('zasady bezpieczeństwa')}|{polish_word('ograniczenia')})\b",
+        0.9,
+    ),
+    # Bypass safeguards, with or without a quantifier.
+    (
+        rf"\b(?:{polish_word('omiń')}|{polish_word('omijaj')}|{polish_word('obejdź')})"
+        rf"{_PL_AR_GAP}{polish_word('wszystkie')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('zabezpieczenia')}|{polish_word('ograniczenia')}|"
+        rf"{polish_word('blokady')})\b",
+        0.9,
+    ),
+    (
+        rf"\b(?:{polish_word('omiń')}|{polish_word('omijaj')}|{polish_word('obejdź')})"
+        rf"{_PL_AR_GAP}"
+        rf"(?:{polish_word('zabezpieczenia')}|{polish_word('ograniczenia')}|"
+        rf"{polish_word('blokady')})\b",
+        0.9,
+    ),
+    # Developer mode enabled, with or without "jest".
+    (
+        rf"\b{polish_phrase('tryb dewelopera')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('jest')}{_PL_AR_GAP})?"
+        rf"(?:{polish_word('włączony')}|{polish_word('aktywny')}|{polish_word('aktywowany')})\b",
+        0.75,
+    ),
+    (
+        rf"\b{polish_phrase('tryb developera')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('jest')}{_PL_AR_GAP})?"
+        rf"(?:{polish_word('włączony')}|{polish_word('aktywny')}|{polish_word('aktywowany')})\b",
+        0.75,
+    ),
+    (
+        rf"\b{polish_phrase('tryb administratora')}{_PL_AR_GAP}"
+        rf"(?:{polish_word('jest')}{_PL_AR_GAP})?"
+        rf"(?:{polish_word('włączony')}|{polish_word('aktywny')}|{polish_word('aktywowany')})\b",
+        0.75,
+    ),
+    # Turn on developer mode.
+    (
+        rf"\b{polish_word('włącz')}{_PL_AR_GAP}"
+        rf"(?:{polish_phrase('tryb dewelopera')}|{polish_phrase('tryb developera')}|"
+        rf"{polish_phrase('tryb administratora')})\b",
+        0.75,
+    ),
+    # Act without restrictions, with or without the quantifier.
+    (
+        rf"\b{polish_word('działaj')}{_PL_AR_GAP}{polish_word('bez')}{_PL_AR_GAP}"
+        rf"{polish_word('żadnych')}{_PL_AR_GAP}{polish_word('ograniczeń')}\b",
+        0.8,
+    ),
+    (
+        rf"\b{polish_word('działaj')}{_PL_AR_GAP}{polish_word('bez')}{_PL_AR_GAP}"
+        rf"{polish_word('ograniczeń')}\b",
         0.8,
     ),
 ]

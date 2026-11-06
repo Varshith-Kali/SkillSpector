@@ -114,6 +114,117 @@ _YARA_AGENT_CONTEXT = re.compile(
 )
 
 
+# Polish direct prohibitions, for the new Polish extraction surface in
+# static_patterns_system_prompt_leakage (issue #1028). This mirrors the
+# English grammar above and is deliberately narrow: only a negation that
+# immediately governs the matched action exempts it. The negation set is
+# the plain prohibition "nie", optionally preceded by "proszę", a
+# second-person pronoun, or "nigdy", with only spaces between the words
+# and before the action. A newline between negation and action does not
+# govern, exactly as in English. Broader forms ("nie wolno", "nie należy",
+# "zakazane") are not included: they are not proven by the reviewer
+# sentence and some state capability, not a direct imperative prohibition.
+_POLISH_SEP = r"[ \t]*"
+_POLISH_NEGATION = r"nie"
+_POLISH_DIRECT_PREFIX = re.compile(
+    r"(?:\A|(?<=[\n\r.!?;,]))[ \t]*"
+    r"(?:[-+][ \t]+|\d+[.)][ \t]+)?"
+    rf"(?:proszę,?{_POLISH_SEP})?"
+    rf"(?:ty,?{_POLISH_SEP})?"
+    rf"(?:nigdy{_POLISH_SEP})?"
+    rf"(?P<negation>{_POLISH_NEGATION}){_POLISH_SEP}\Z",
+    re.IGNORECASE,
+)
+_POLISH_SENTENCE_END = re.compile(rf"[.!?;{LINE_BREAK_CHARS}]")
+_POLISH_CLAUSE_BREAK = re.compile(rf"[.!?;{LINE_BREAK_CHARS}]")
+_POLISH_LEADING_QUALIFIER = re.compile(
+    r"\b(?:jeśli|jeżeli|gdy|kiedy|gdyby|o\s+ile|chyba\s+że|tylko|ale|jednak|lecz|"
+    r"w\s+przeciwnym\s+razie|z\s+wyjątkiem|dopóki|podczas|po|przed|dla|aby|żeby)\b",
+    re.IGNORECASE,
+)
+_POLISH_EXCEPTION = re.compile(
+    r"(?:chyba\s+że|ale|jednak|lecz|z\s+wyjątkiem|jeśli|jeżeli|o\s+ile|"
+    r"w\s+przeciwnym\s+razie)",
+    re.IGNORECASE,
+)
+_POLISH_DISAVOWAL = re.compile(
+    r"(?:zignoruj|ignoruj|pomiń|narusz|złam|unieważnij|cofnij|anuluj|"
+    r"nie\s+obowiązuje|nieaktualne)",
+    re.IGNORECASE,
+)
+_POLISH_REFERENTIAL = re.compile(
+    r"(?:wypisz\s+(?:to|go)|ujawnij\s+(?:to|go)|pokaż\s+(?:to|go)|zrób\s+to|wykonaj\s+to|postępuj\s+tak)",
+    re.IGNORECASE,
+)
+_POLISH_FOLLOWING_OVERRIDE = re.compile(
+    r"(?:chyba\s+że|ale|jednak|lecz|w\s+przeciwnym\s+razie|zrób\s+to|wypisz\s+(?:to|go)|"
+    r"ujawnij\s+(?:to|go)|natychmiast|od\s+razu|wykonaj\s+to)",
+    re.IGNORECASE,
+)
+
+
+def _is_polish_directly_prohibited(
+    content: str,
+    start: int,
+    end: int,
+    allowed_tail: re.Pattern[str] | None,
+) -> bool:
+    """Whether a Polish direct prohibition immediately governs this action.
+
+    Mirrors the English grammar in :func:`is_directly_prohibited`: the
+    negation must sit immediately before the matched action, a condition
+    or scope leading into it rejects the exemption, an exception in the
+    same clause rejects it, and a following sentence carrying an
+    exception or override marker rejects it. A negation elsewhere in
+    the sentence (for example governing a different verb) never exempts,
+    because the prefix pattern is anchored at the match start and allows
+    only spaces after the negation. Unknown or incomplete context retains
+    detection.
+    """
+    if not 0 <= start < end <= len(content):
+        return False
+    left = max(0, start - _CONTEXT_CHARS)
+    prefix = content[left:start].translate(_MARKDOWN)
+    prohibited = _POLISH_DIRECT_PREFIX.search(prefix)
+    if prohibited is None or (left and prohibited.start() == 0):
+        return False
+    leading = prefix[: prohibited.start()]
+    if sum(leading.count(char) for char in "“”") % 2:
+        return False
+    if sum(leading.count(char) for char in "‘’") % 2:
+        return False
+    if _POLISH_DISAVOWAL.search(leading):
+        return False
+    if _POLISH_LEADING_QUALIFIER.search(_POLISH_CLAUSE_BREAK.split(leading)[-1]):
+        return False
+    if _BLANK_LINE.search(LOGICAL_LINE_BREAK.sub("\n", prohibited.group())):
+        return False
+    raw_tail = content[end : end + _CONTEXT_CHARS]
+    tail_view = normalized_security_view(raw_tail)
+    tail = tail_view.text
+    if _POLISH_DISAVOWAL.search(tail) or _POLISH_REFERENTIAL.search(tail):
+        return False
+    boundary = _POLISH_SENTENCE_END.search(tail)
+    if boundary is None and end + len(raw_tail) < len(content):
+        return False
+    if boundary is not None:
+        following_start = (
+            tail_view.source_offset(boundary.end()) if boundary.end() < len(tail) else len(raw_tail)
+        )
+        following = raw_tail[following_start:].lstrip()
+        following = _LIST_PREFIX.sub("", following, count=1)
+        following_clause = _POLISH_SENTENCE_END.split(following, maxsplit=1)[0] if following else ""
+        if _POLISH_FOLLOWING_OVERRIDE.search(following_clause):
+            return False
+    clause = tail[: boundary.start()] if boundary is not None else tail
+    if _POLISH_EXCEPTION.search(clause):
+        return False
+    clean_tail = clause.translate(_MARKDOWN).strip(" \t").rstrip("])}").strip()
+    return not clean_tail or (
+        allowed_tail is not None and allowed_tail.fullmatch(clean_tail) is not None
+    )
+
+
 def is_directly_prohibited(
     content: str,
     start: int,
@@ -158,7 +269,13 @@ def is_directly_prohibited(
             # unchanged. Retain all leading text for quote/reversal checks.
             prefix = prefix[:prefix_boundary] + ";" + prefix[prefix_boundary + 1 :]
             prohibited = _DIRECT_PREFIX.search(prefix)
-    if prohibited is None or (left and prohibited.start() == 0):
+    if prohibited is None:
+        # No English prohibition governs this match; a Polish one may.
+        # An English prohibition that exists but was rejected above (for
+        # example by allow_clause_prefix scope checks) keeps its verdict
+        # and is not overridden by a Polish check.
+        return _is_polish_directly_prohibited(content, start, end, allowed_tail)
+    if left and prohibited.start() == 0:
         return False
     leading = prefix[: prohibited.start()]
     quoted = _CONTRACTION.sub("", leading)

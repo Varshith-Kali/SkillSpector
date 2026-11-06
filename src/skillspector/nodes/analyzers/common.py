@@ -34,6 +34,59 @@ LOGICAL_LINE_BREAK = re.compile(r"\r\n|[\r\n\v\f\x1c-\x1e\x85\u2028\u2029]")
 LINE_BREAK_CHARS = "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 MAX_FINDING_CONTEXT_CHARS = 1_000
 
+# Polish-language static patterns (issue #1028). Polish is inflected and
+# commonly typed without diacritics, so a pattern word is written in its
+# correct spelling and each letter that carries a Polish diacritic matches
+# with or without its mark, in either case (patterns run with
+# re.IGNORECASE). The confusables skeleton does not strip these marks and
+# NFKC leaves them composed, so the classes below are what makes the
+# diacritic-free spelling match. Words are space separated, so phrases join
+# words with a single whitespace gap.
+_POLISH_DIACRITIC_CLASS = {
+    "a": "[aą]",
+    "ą": "[aą]",
+    "c": "[cć]",
+    "ć": "[cć]",
+    "e": "[eę]",
+    "ę": "[eę]",
+    "l": "[lł]",
+    "ł": "[lł]",
+    "n": "[nń]",
+    "ń": "[nń]",
+    "o": "[oó]",
+    "ó": "[oó]",
+    "s": "[sś]",
+    "ś": "[sś]",
+    "z": "[zźż]",
+    "ź": "[zźż]",
+    "ż": "[zźż]",
+}
+# One whitespace gap between required phrase words, mirroring the English
+# patterns. A gap is a single required separator, never an optional group
+# between repeated gaps, so a near miss on a long separator run fails in
+# linear time.
+PL_GAP = r"\s+"
+
+
+def polish_word(word: str) -> str:
+    """Return a regex fragment matching *word* with or without diacritics.
+
+    *word* is written in its correct Polish spelling; every letter that
+    carries a diacritic becomes a class matching both forms, so "żadnych"
+    also matches "zadnych" and "ŻADNYCH". Other characters are escaped.
+    """
+    return "".join(_POLISH_DIACRITIC_CLASS.get(ch, re.escape(ch)) for ch in word)
+
+
+def polish_phrase(phrase: str) -> str:
+    """Return a regex fragment matching a space-separated Polish *phrase*.
+
+    Each word is matched with :func:`polish_word` and words are joined by
+    exactly one :data:`PL_GAP`, so "tryb bez ograniczeń" also matches
+    "tryb bez ograniczen" and the same words across a line break.
+    """
+    return PL_GAP.join(polish_word(word) for word in phrase.split(" "))
+
 
 def make_dummy_finding(analyzer_id: str) -> Finding:
     """Create a deterministic dummy finding for a stub analyzer."""

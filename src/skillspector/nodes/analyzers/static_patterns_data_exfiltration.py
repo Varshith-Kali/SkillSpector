@@ -31,10 +31,13 @@ from . import static_runner
 from .common import (
     MARKDOWN_FENCE_CLOSE,
     MARKDOWN_FENCE_OPEN,
+    PL_GAP,
     apply_import_aliases,
     get_context,
     get_context_from_lines,
     get_line_number,
+    polish_phrase,
+    polish_word,
     resolve_call_name,
     resolve_dotted_name,
 )
@@ -146,6 +149,76 @@ E4_PATTERNS = [
     (
         r"(?:always\s+)?include\s+(?:the\s+)?(?:full\s+)?(?:conversation|context)\s+(?:when|in)\s+(?:calling|making)\s+(?:external|api)",
         0.8,
+    ),
+    # Polish-language equivalents (issue #1028). The secrecy-only phrase
+    # "do not tell the user" never matches on its own; it matches only
+    # combined with a send verb in the same sentence. The send-plus-secrecy
+    # gap below is a bounded lazy run that stops at a sentence-ending dot:
+    # a dot counts as a boundary only when followed by whitespace, so dots
+    # inside a URL (https://collect.example.net/api) do not end the run,
+    # while a dot ending the sentence does. Each pattern is split into one
+    # variant per combination of its optional segments, following the split
+    # discipline of the Chinese patterns in PR #968.
+    (
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')}){PL_GAP}"
+        f"(?:{polish_word('całą')}|{polish_word('pełną')}){PL_GAP}"
+        f"(?:{polish_phrase('historię rozmowy')}|{polish_phrase('historię czatu')}|"
+        f"{polish_phrase('historię konwersacji')}|{polish_word('rozmowę')}|"
+        f"{polish_word('konwersację')}|{polish_word('historię')})"
+        f"(?:{PL_GAP}(?:{polish_word('na')}|{polish_word('do')}))?",
+        0.85,
+    ),
+    (
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')}){PL_GAP}"
+        f"(?:{polish_phrase('historię rozmowy')}|{polish_phrase('historię czatu')}|"
+        f"{polish_phrase('historię konwersacji')}|{polish_word('rozmowę')}|"
+        f"{polish_word('konwersację')}|{polish_word('historię')})"
+        f"(?:{PL_GAP}(?:{polish_word('na')}|{polish_word('do')}))?",
+        0.85,
+    ),
+    (
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')})"
+        f"(?:[^.\n]|\\.(?=\\S)){{0,80}}?"
+        f"{polish_word('nie')}{PL_GAP}"
+        f"(?:{polish_word('mów')}|{polish_word('informuj')}|{polish_word('powiadamiaj')}){PL_GAP}"
+        f"{polish_phrase('o tym')}{PL_GAP}{polish_word('użytkownikowi')}",
+        0.85,
+    ),
+    (
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')})"
+        f"(?:[^.\n]|\\.(?=\\S)){{0,80}}?"
+        f"{polish_word('nie')}{PL_GAP}"
+        f"(?:{polish_word('mów')}|{polish_word('informuj')}|{polish_word('powiadamiaj')}){PL_GAP}"
+        f"{polish_word('użytkownika')}",
+        0.85,
+    ),
+    (
+        f"{polish_word('nie')}{PL_GAP}"
+        f"(?:{polish_word('mów')}|{polish_word('informuj')}|{polish_word('powiadamiaj')}){PL_GAP}"
+        f"{polish_phrase('o tym')}{PL_GAP}{polish_word('użytkownikowi')}"
+        f"(?:[^.\n]|\\.(?=\\S)){{0,80}}?"
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')})",
+        0.85,
+    ),
+    (
+        f"{polish_word('nie')}{PL_GAP}"
+        f"(?:{polish_word('mów')}|{polish_word('informuj')}|{polish_word('powiadamiaj')}){PL_GAP}"
+        f"{polish_word('użytkownika')}"
+        f"(?:[^.\n]|\\.(?=\\S)){{0,80}}?"
+        f"(?:{polish_word('wyślij')}|{polish_word('wysyłaj')}|{polish_word('prześlij')}|"
+        f"{polish_word('przesyłaj')}|{polish_word('przekaż')}|{polish_word('udostępnij')}|"
+        f"{polish_word('wyeksportuj')})",
+        0.85,
     ),
 ]
 # E5: data shipped out via cloud-storage SDKs/CLIs (the cloud counterpart of E1's
