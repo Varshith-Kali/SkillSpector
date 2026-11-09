@@ -309,9 +309,13 @@ _DEFAULT_IGNORABLE_PATTERN = re.compile(
 )
 _DEFAULT_IGNORABLE_RUN_PATTERN = re.compile(_DEFAULT_IGNORABLE_PATTERN.pattern + "+")
 _REPEATED_CHARACTER_RUN_PATTERN = re.compile(r"(.)\1+")
-_ASCII_CONFUSABLE_PATTERN = re.compile(
-    "[" + "".join(re.escape(chr(codepoint)) for codepoint in ASCII_CONFUSABLE_SKELETON) + "]"
-)
+# The confusable skeleton maps 1,515 code points. A regex character class that
+# large is matched one code point at a time against every range in the class,
+# so searching a long CJK window costs seconds even when nothing matches.
+# Deleting the same set with str.translate is one C-level pass, and the length
+# only changes when a confusable character is actually present, so the check in
+# `_requires_normalized_security_view_uncached` stays exact without the regex.
+_CONFUSABLE_DELETION_TABLE = dict.fromkeys(ASCII_CONFUSABLE_SKELETON)
 _OBFUSCATED_INSTRUCTION_ACTIONS = (
     "ignore",
     "override",
@@ -342,6 +346,349 @@ _OBFUSCATED_ACTION_START_PATTERN = re.compile(
     )
     + "]",
     re.IGNORECASE,
+)
+# Every character `_OBFUSCATED_ACTION_START_PATTERN` matches, derived
+# exhaustively from that pattern over U+0000..U+10FFFF (Unicode 15.0
+# runtime). The pattern is a 321-literal class matched one code point at a
+# time, so seeking the next action initial in a long CJK window costs
+# seconds even when nothing matches; the same set searched with str.find is
+# one C-level pass per character and returns the earliest position directly.
+# The set is the exact matched set, including the IGNORECASE case-fold
+# closure (for example U+0130 matches the ``i`` literal although it is not a
+# literal itself, while U+118B5 is a literal the pattern never matches), so
+# the find-based seek below returns exactly the positions the regex would.
+# Regenerate the ranges if the Unicode version changes;
+# test_token_gap_fast_paths pins the set against the pattern.
+_OBFUSCATED_ACTION_START_RANGES = (
+    (66, 66),
+    (68, 68),
+    (70, 70),
+    (73, 73),
+    (79, 79),
+    (98, 98),
+    (100, 100),
+    (102, 102),
+    (105, 105),
+    (111, 111),
+    (304, 305),
+    (388, 389),
+    (401, 402),
+    (406, 406),
+    (617, 618),
+    (837, 837),
+    (914, 914),
+    (921, 921),
+    (927, 927),
+    (931, 931),
+    (946, 946),
+    (953, 953),
+    (959, 959),
+    (962, 963),
+    (976, 976),
+    (988, 989),
+    (1004, 1005),
+    (1030, 1030),
+    (1042, 1042),
+    (1054, 1054),
+    (1068, 1068),
+    (1074, 1074),
+    (1086, 1086),
+    (1100, 1100),
+    (1110, 1110),
+    (1280, 1281),
+    (1362, 1362),
+    (1364, 1365),
+    (1410, 1410),
+    (1412, 1413),
+    (1505, 1505),
+    (1607, 1607),
+    (1637, 1637),
+    (1726, 1726),
+    (1729, 1729),
+    (1749, 1749),
+    (1781, 1781),
+    (1984, 1984),
+    (2406, 2406),
+    (2534, 2534),
+    (2662, 2662),
+    (2790, 2790),
+    (2848, 2848),
+    (2918, 2918),
+    (3046, 3046),
+    (3074, 3074),
+    (3174, 3174),
+    (3202, 3202),
+    (3302, 3302),
+    (3330, 3330),
+    (3360, 3360),
+    (3430, 3430),
+    (3458, 3458),
+    (3664, 3664),
+    (3792, 3792),
+    (4125, 4125),
+    (4160, 4160),
+    (4351, 4351),
+    (4816, 4816),
+    (5024, 5024),
+    (5029, 5029),
+    (5071, 5071),
+    (5095, 5095),
+    (5108, 5108),
+    (5116, 5116),
+    (5231, 5231),
+    (5234, 5234),
+    (5551, 5551),
+    (5556, 5556),
+    (5598, 5598),
+    (5610, 5610),
+    (5623, 5623),
+    (6112, 6112),
+    (7296, 7296),
+    (7298, 7298),
+    (7359, 7359),
+    (7439, 7439),
+    (7441, 7441),
+    (7477, 7477),
+    (7522, 7522),
+    (7589, 7590),
+    (7837, 7837),
+    (8126, 8126),
+    (8305, 8305),
+    (8464, 8465),
+    (8492, 8492),
+    (8497, 8497),
+    (8500, 8500),
+    (8505, 8505),
+    (8517, 8518),
+    (8520, 8520),
+    (8544, 8544),
+    (8558, 8558),
+    (8560, 8560),
+    (8574, 8574),
+    (9075, 9075),
+    (9406, 9406),
+    (9432, 9432),
+    (11394, 11395),
+    (11410, 11411),
+    (11422, 11423),
+    (11604, 11604),
+    (12295, 12295),
+    (42192, 42192),
+    (42194, 42195),
+    (42205, 42205),
+    (42227, 42227),
+    (42566, 42567),
+    (42904, 42905),
+    (42926, 42926),
+    (42932, 42933),
+    (43829, 43829),
+    (43837, 43837),
+    (43888, 43888),
+    (43893, 43893),
+    (43935, 43935),
+    (43959, 43959),
+    (64422, 64429),
+    (65257, 65260),
+    (65314, 65314),
+    (65321, 65321),
+    (65327, 65327),
+    (65346, 65346),
+    (65353, 65353),
+    (65359, 65359),
+    (66178, 66178),
+    (66183, 66183),
+    (66194, 66194),
+    (66209, 66209),
+    (66213, 66213),
+    (66219, 66219),
+    (66305, 66305),
+    (66564, 66564),
+    (66604, 66604),
+    (66754, 66754),
+    (66794, 66794),
+    (66838, 66838),
+    (66853, 66853),
+    (70864, 70864),
+    (71842, 71843),
+    (71848, 71848),
+    (71863, 71863),
+    (71874, 71875),
+    (71880, 71880),
+    (71895, 71895),
+    (71904, 71904),
+    (73184, 73184),
+    (93878, 93878),
+    (117975, 117975),
+    (117977, 117977),
+    (117979, 117979),
+    (117988, 117988),
+    (118000, 118000),
+    (119315, 119315),
+    (119809, 119809),
+    (119811, 119811),
+    (119813, 119813),
+    (119816, 119816),
+    (119822, 119822),
+    (119835, 119835),
+    (119837, 119837),
+    (119839, 119839),
+    (119842, 119842),
+    (119848, 119848),
+    (119861, 119861),
+    (119863, 119863),
+    (119865, 119865),
+    (119868, 119868),
+    (119874, 119874),
+    (119887, 119887),
+    (119889, 119889),
+    (119891, 119891),
+    (119894, 119894),
+    (119900, 119900),
+    (119913, 119913),
+    (119915, 119915),
+    (119917, 119917),
+    (119920, 119920),
+    (119926, 119926),
+    (119939, 119939),
+    (119941, 119941),
+    (119943, 119943),
+    (119946, 119946),
+    (119952, 119952),
+    (119967, 119967),
+    (119978, 119978),
+    (119991, 119991),
+    (119993, 119993),
+    (119995, 119995),
+    (119998, 119998),
+    (120017, 120017),
+    (120019, 120019),
+    (120021, 120021),
+    (120024, 120024),
+    (120030, 120030),
+    (120043, 120043),
+    (120045, 120045),
+    (120047, 120047),
+    (120050, 120050),
+    (120056, 120056),
+    (120069, 120069),
+    (120071, 120071),
+    (120073, 120073),
+    (120082, 120082),
+    (120095, 120095),
+    (120097, 120097),
+    (120099, 120099),
+    (120102, 120102),
+    (120108, 120108),
+    (120121, 120121),
+    (120123, 120123),
+    (120125, 120125),
+    (120128, 120128),
+    (120134, 120134),
+    (120147, 120147),
+    (120149, 120149),
+    (120151, 120151),
+    (120154, 120154),
+    (120160, 120160),
+    (120173, 120173),
+    (120175, 120175),
+    (120177, 120177),
+    (120180, 120180),
+    (120186, 120186),
+    (120199, 120199),
+    (120201, 120201),
+    (120203, 120203),
+    (120206, 120206),
+    (120212, 120212),
+    (120225, 120225),
+    (120227, 120227),
+    (120229, 120229),
+    (120232, 120232),
+    (120238, 120238),
+    (120251, 120251),
+    (120253, 120253),
+    (120255, 120255),
+    (120258, 120258),
+    (120264, 120264),
+    (120277, 120277),
+    (120279, 120279),
+    (120281, 120281),
+    (120284, 120284),
+    (120290, 120290),
+    (120303, 120303),
+    (120305, 120305),
+    (120307, 120307),
+    (120310, 120310),
+    (120316, 120316),
+    (120329, 120329),
+    (120331, 120331),
+    (120333, 120333),
+    (120336, 120336),
+    (120342, 120342),
+    (120355, 120355),
+    (120357, 120357),
+    (120359, 120359),
+    (120362, 120362),
+    (120368, 120368),
+    (120381, 120381),
+    (120383, 120383),
+    (120385, 120385),
+    (120388, 120388),
+    (120394, 120394),
+    (120407, 120407),
+    (120409, 120409),
+    (120411, 120411),
+    (120414, 120414),
+    (120420, 120420),
+    (120433, 120433),
+    (120435, 120435),
+    (120437, 120437),
+    (120440, 120440),
+    (120446, 120446),
+    (120459, 120459),
+    (120461, 120461),
+    (120463, 120463),
+    (120466, 120466),
+    (120472, 120472),
+    (120484, 120484),
+    (120489, 120489),
+    (120502, 120502),
+    (120522, 120522),
+    (120528, 120528),
+    (120532, 120532),
+    (120547, 120547),
+    (120560, 120560),
+    (120580, 120580),
+    (120586, 120586),
+    (120590, 120590),
+    (120605, 120605),
+    (120618, 120618),
+    (120638, 120638),
+    (120644, 120644),
+    (120648, 120648),
+    (120663, 120663),
+    (120676, 120676),
+    (120696, 120696),
+    (120702, 120702),
+    (120706, 120706),
+    (120721, 120721),
+    (120734, 120734),
+    (120754, 120754),
+    (120760, 120760),
+    (120764, 120764),
+    (120778, 120778),
+    (122956, 122956),
+    (122984, 122984),
+    (126500, 126500),
+    (126564, 126564),
+    (126596, 126596),
+    (127288, 127288),
+)
+# ASCII initials first, so the earliest bound is usually set on the first
+# few searches and the remaining ones stay short.
+_OBFUSCATED_ACTION_START_CHARS = tuple(
+    chr(codepoint)
+    for start, end in _OBFUSCATED_ACTION_START_RANGES
+    for codepoint in range(start, end + 1)
 )
 _LOGICAL_LINE_BREAK_CHARACTERS = frozenset(
     {"\r", "\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"}
@@ -1447,6 +1794,46 @@ def _match_obfuscated_security_word_backward(
     return None
 
 
+_OBFUSCATED_SEEK_WINDOW = 8192
+_OBFUSCATED_SEEK_CHUNK = 65536
+
+
+def _next_obfuscated_action_start(text: str, cursor: int) -> int | None:
+    """Return the next action-initial position at or after *cursor*.
+
+    Equivalent to ``_OBFUSCATED_ACTION_START_PATTERN.search(text, cursor)``
+    for the non-ASCII path. Two tiers, because neither tier alone is fast in
+    both cases the scanner sees: the regex finds a nearby candidate in
+    microseconds but costs seconds over a long candidate-free stretch, while
+    the find-based scan is fast over a long stretch but pays one Python call
+    per candidate character on every seek, and the DP seeks once per candidate
+    (hundreds of thousands of times per module on English-heavy skills).
+    Tier 1 runs the regex over a bounded window, so dense text never leaves
+    it; tier 2 scans the remainder in 64K chunks with one C-level str.find
+    per candidate character, so a candidate-free CJK window costs one flat
+    scan instead of a regex walk. A candidate past the tier-1 window is
+    still found exactly by tier 2, at the cost of one chunk scan per seek.
+    """
+    window_end = min(len(text), cursor + _OBFUSCATED_SEEK_WINDOW)
+    match = _OBFUSCATED_ACTION_START_PATTERN.search(text, cursor, window_end)
+    if match is not None:
+        return match.start()
+    chunk_start = cursor
+    while chunk_start < len(text):
+        chunk_end = min(len(text), chunk_start + _OBFUSCATED_SEEK_CHUNK)
+        best: int | None = None
+        for character in _OBFUSCATED_ACTION_START_CHARS:
+            position = text.find(character, chunk_start, chunk_end if best is None else best)
+            if position != -1 and (best is None or position < best):
+                best = position
+                if best == chunk_start:
+                    break
+        if best is not None:
+            return best
+        chunk_start = chunk_end
+    return None
+
+
 def _obfuscated_action_completions(
     text: str,
     check_runtime: Callable[[], None] | None = None,
@@ -1463,11 +1850,7 @@ def _obfuscated_action_completions(
     """
     states: dict[tuple[str, int], tuple[_ObfuscatedIgnoreState, ...]] = {}
     cursor = 0
-    action_start_pattern = (
-        _ASCII_OBFUSCATED_ACTION_START_PATTERN
-        if text.isascii()
-        else _OBFUSCATED_ACTION_START_PATTERN
-    )
+    ascii_source = text.isascii()
     if check_runtime is not None:
         check_runtime()
 
@@ -1503,12 +1886,20 @@ def _obfuscated_action_completions(
 
     while cursor < len(text):
         if not states:
-            candidate = action_start_pattern.search(text, cursor)
-            if check_runtime is not None:
-                check_runtime()
-            if candidate is None:
-                return
-            cursor = candidate.start()
+            if ascii_source:
+                candidate = _ASCII_OBFUSCATED_ACTION_START_PATTERN.search(text, cursor)
+                if check_runtime is not None:
+                    check_runtime()
+                if candidate is None:
+                    return
+                cursor = candidate.start()
+            else:
+                start = _next_obfuscated_action_start(text, cursor)
+                if check_runtime is not None:
+                    check_runtime()
+                if start is None:
+                    return
+                cursor = start
 
         _check_security_runtime(check_runtime, cursor)
         character = text[cursor]
@@ -1714,25 +2105,76 @@ def _letter_spacing_gap_offsets(
 
 
 def _compute_token_gap_character(ch: str) -> bool:
-    return (
-        _is_unconditionally_ignored(ch)
-        or is_default_ignorable(ch)
-        or _is_non_ascii_separator(ch)
-        or ch == "\ufffd"
-    )
+    """Return whether *ch* can start or continue a token-bridging gap run.
+
+    For a non-ASCII character this is one category lookup: the default
+    ignorables and the replacement character are checked first, and the rest
+    is exactly the Cf, Cc and Z categories (unconditionally ignored format and
+    control characters, and non-ASCII separators). ASCII characters keep the
+    precomputed table path in `_is_token_gap_character`, so the allowed format
+    characters (newline, carriage return, tab) stay non-gaps here.
+    """
+    if is_default_ignorable(ch) or ch == "\ufffd":
+        return True
+    if ch.isascii():
+        return _is_unconditionally_ignored(ch)
+    category = unicodedata.category(ch)
+    return category in {"Cf", "Cc"} or category.startswith("Z")
 
 
 _ASCII_TOKEN_GAP_CHARS = frozenset(
     ch for ch in map(chr, range(128)) if _compute_token_gap_character(ch)
 )
 
-# Any character that cannot be a token gap need not be examined at all. Every
-# ASCII character outside this class is settled by the table above, so a text
-# built only from them has no gap spans and the per-character walk below is
-# pure overhead.
-_TOKEN_GAP_CANDIDATE = re.compile(
-    "[^"
-    + "".join(re.escape(ch) for ch in map(chr, range(128)) if ch not in _ASCII_TOKEN_GAP_CHARS)
+# Every character `_is_token_gap_character` accepts, as ranges derived
+# exhaustively from that predicate over U+0000..U+10FFFF (Unicode 15.0
+# runtime; the default-ignorable subset matches the pinned Unicode 15.1.0
+# ranges in `_DEFAULT_IGNORABLE_RANGES`). The old whole-string skip only
+# excluded pure printable-ASCII text, so any CJK or Sinhala window passed it
+# and paid a per-character Python walk even when the text held no gap
+# character at all. This class is the exact gap set, so a non-match proves
+# the walk below would yield nothing. Regenerate the ranges if the Unicode
+# version changes; test_token_gap_fast_paths pins every range boundary.
+_TOKEN_GAP_RANGES = (
+    (0x0000, 0x0008),
+    (0x000B, 0x000C),
+    (0x000E, 0x001F),
+    (0x007F, 0x00A0),
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x115F, 0x1160),
+    (0x1680, 0x1680),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x2000, 0x200F),
+    (0x2028, 0x202F),
+    (0x205F, 0x206F),
+    (0x3000, 0x3000),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFFB),
+    (0xFFFD, 0xFFFD),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_TOKEN_GAP_CHARACTER = re.compile(
+    "["
+    + "".join(
+        re.escape(chr(start)) if start == end else f"{re.escape(chr(start))}-{re.escape(chr(end))}"
+        for start, end in _TOKEN_GAP_RANGES
+    )
     + "]"
 )
 
@@ -1743,14 +2185,14 @@ def _is_token_gap_character(ch: str) -> bool:
     return _compute_token_gap_character(ch)
 
 
-def _token_bridging_gap_spans(
+def _token_bridging_gap_spans_uncached(
     text: str,
     *,
     require_word_boundaries: bool = True,
     check_runtime: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, int]]:
     """Yield contextual noise runs in one pass without crossing ASCII spaces."""
-    if _TOKEN_GAP_CANDIDATE.search(text) is None:
+    if _TOKEN_GAP_CHARACTER.search(text) is None:
         return
     offset = 0
     while offset < len(text):
@@ -1778,6 +2220,37 @@ def _token_bridging_gap_spans(
         )
         if is_contextual:
             yield start, offset
+
+
+@lru_cache(maxsize=_TEXT_PREDICATE_CACHE_SIZE)
+def _cached_token_bridging_gap_spans(
+    text: str, require_word_boundaries: bool
+) -> tuple[tuple[int, int], ...]:
+    """Return the gap spans for one text, memoized across analyzers.
+
+    Gap spans are a pure function of the text and the boundary rule, and every
+    analyzer in a scan re-derives them for the same windows. A cache miss walks
+    the window once without intermediate deadline checks; windows are bounded
+    (256K characters in the static runner), so that walk stays well under a
+    second, and the deadline is still honored for every span yielded below and
+    by the caller between views.
+    """
+    return tuple(
+        _token_bridging_gap_spans_uncached(text, require_word_boundaries=require_word_boundaries)
+    )
+
+
+def _token_bridging_gap_spans(
+    text: str,
+    *,
+    require_word_boundaries: bool = True,
+    check_runtime: Callable[[], None] | None = None,
+) -> Iterator[tuple[int, int]]:
+    """Yield contextual noise runs in one pass without crossing ASCII spaces."""
+    for start, end in _cached_token_bridging_gap_spans(text, require_word_boundaries):
+        if check_runtime is not None:
+            check_runtime()
+        yield start, end
 
 
 def _is_contextual_default_ignorable_offset(text: str, offset: int) -> bool:
@@ -2378,9 +2851,12 @@ def _requires_normalized_security_view_uncached(
         return True
     if check_runtime is not None:
         check_runtime()
-    # The confusable map has no ASCII keys; avoid a comparatively expensive
-    # regex pass over large plain-ASCII windows.
-    if not text.isascii() and _ASCII_CONFUSABLE_PATTERN.search(text) is not None:
+    # The confusable map has no ASCII keys. Deleting its code points with
+    # str.translate is one C-level pass; the length only changes when a
+    # confusable character is actually present, so this stays exact while the
+    # 1,515-entry regex character class it replaces cost seconds per CJK
+    # window. Keep the ASCII guard: translate still walks the whole string.
+    if not text.isascii() and len(text.translate(_CONFUSABLE_DELETION_TABLE)) != len(text):
         return True
     if text.isprintable():
         return False
